@@ -35,7 +35,7 @@ struct inode {
 	uint32_t	type;				/* type of the file */
 	uint32_t	link;				/* link count */
 	int			direct_ptr[16];		/* direct pointer to data block */
-	int			indirect_ptr[8];	/* indirect pointer to data block */
+	int			indirect_ptr[8];	/* indirect pointer to data block (not used in this project?)*/
 	struct stat	vstat;				/* inode stat */
 };
 
