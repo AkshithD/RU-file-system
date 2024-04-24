@@ -200,46 +200,31 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 
 	return 0;
 }
-
-u_int16_t get_next_node_in_path(u_int16_t ino, char *name, int len){
-	struct inode *curr_inode;
-	readi(ino, curr_inode);
-	if (curr_inode->type != S_IFDIR) {
-		return -1;
-	}
-	int num_of_blocks = curr_inode->size / BLOCK_SIZE;
-	char buf[BLOCK_SIZE];
-	for (int i = 0; i < num_of_blocks; i++){
-		bio_read(curr_inode->direct_ptr[i], buf);
-		struct dirent *entry = (struct dirent *) buf;
-		for (int j = 0; j < BLOCK_SIZE / sizeof(struct dirent); j++) {
-			if (entry[j].valid == 1 && entry[j].len == len && strncmp(entry[j].name, name, len) == 0) {
-				return entry[j].ino;
-			}
-		}
-	}
-	return -1;
-}
-
 /* 
  * namei operation
  */
 int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
-	// not handling the case where the path is empty, .., or . fix this
 	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
 	// Note: You could either implement it in a iterative way or recursive way
 	char *path_copy = strdup(path);
 	char *token = strtok(path_copy, "/");
+	int res =0;
 	while (token != NULL) {
-		ino = get_next_node_in_path(ino, token, strlen(token));
-		if (ino == -1) {
+		if (token == "."){
+			token = strtok(NULL, "/");
+			continue;
+		}else if (token == ".."){
+			// fix
+		}
+		res = dir_find(ino, token, strlen(token), inode);
+		if (res == -1) {
 			free(path_copy);
 			return -1;
 		}
+		ino = inode->ino;
 		token = strtok(NULL, "/");
 	}
 	free(path_copy);
-	readi(ino, inode);
 	return 0;
 }
 
