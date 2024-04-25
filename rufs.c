@@ -299,6 +299,10 @@ static void *rufs_init(struct fuse_conn_info *conn) {
 	// Step 1b: If disk file is found, just initialize in-memory data structures
 	// and read superblock from disk
 	bio_read(0, &sb);
+	if (sb.magic_num != MAGIC_NUM) {
+		printf("Error: Magic number does not match. Exiting...\n");
+		exit(1);
+	}
 	i_bitmap = (bitmap_t) malloc(MAX_INUM / 8);
 	d_bitmap = (bitmap_t) malloc(MAX_DNUM / 8);
 	bio_read(sb.i_bitmap_blk, i_bitmap);
