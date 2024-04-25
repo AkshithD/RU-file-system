@@ -303,10 +303,7 @@ int rufs_mkfs() {
 		memcpy(buf + i * sizeof(struct dirent), &entry, sizeof(struct dirent));
 	}
 	bio_write(root_inode.direct_ptr[0], buf);
-	time_t current_time;
-    time(&current_time);
-    root_inode.vstat.st_mtime = current_time;
-	bio_write(sb.i_start_blk, &root_inode);
+	writei(0, &root_inode);
 
 	return 0;
 }
@@ -357,8 +354,8 @@ static int rufs_getattr(const char *path, struct stat *stbuf) {
 		stbuf->st_uid = getuid();
 		stbuf->st_gid = getgid();
 		stbuf->st_size = curr_inode.size;
-		stbuf->st_mode = curr_inode.type | 0755;
-		stbuf->st_nlink  = 2;
+		stbuf->st_mode = curr_inode.type | 0755; //check
+		stbuf->st_nlink  = 2; //check
 		time(&stbuf->st_mtime);
 	return 0;
 }
@@ -374,7 +371,7 @@ static int rufs_opendir(const char *path, struct fuse_file_info *fi) {
 	if (curr_inode.type != S_IFDIR){
 		return -1;
 	}
-	fi->fh = curr_inode.ino;
+	fi->fh = curr_inode.ino; //check
     return 0;
 }
 
@@ -385,7 +382,7 @@ static int rufs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
     if (res == -1) {
         return -1;
     }
-	fi -> fh = curr_inode.ino;
+	fi -> fh = curr_inode.ino; // check
 	// Step 2: Read directory entries from its data blocks, and copy them to filler
     char buf[BLOCK_SIZE];
     off_t entry_offset = offset / sizeof(struct dirent);  // Calculate starting index based on offset
@@ -407,33 +404,8 @@ static int rufs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
 static int rufs_mkdir(const char *path, mode_t mode) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
-    char *path_copy = strdup(path);
-    if (path_copy == NULL) {
-        perror("strdup");
-        return 1;
-    }
-
-    // Initialize parent_dir and target_dir
-    char *parent_dir = NULL;
-    char *target_dir = NULL;
-
-    // Tokenize the path
-    char *token = strtok(path_copy, "/");
-    char *prev_token = NULL;  // To track the previous token
-    while (token != NULL) {
-        if (prev_token != NULL) {
-            // Append the token to parent_dir if it's not the first token
-            size_t len = strlen(prev_token) + strlen("/") + strlen(token) + 1;
-            parent_dir = realloc(parent_dir, len);
-            strcat(parent_dir, "/");
-            strcat(parent_dir, prev_token);
-        }
-        prev_token = token;
-        token = strtok(NULL, "/");
-    }
-
-    // The last token is the target directory
-    target_dir = prev_token;
+    char *parent_dir = dirname(path);
+	char *target_dir = basename(path);
 
 	// Step 2: Call get_node_by_path() to get inode of parent directory
 	struct inode parent_inode;
@@ -457,7 +429,7 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 	target_inode.direct_ptr[0] = get_avail_blkno();
 	// Step 6: Call writei() to write inode to disk
 	writei(next_ino, &target_inode);
-
+	//how do i add mode
 	return 0;
 }
 
@@ -488,25 +460,47 @@ static int rufs_releasedir(const char *path, struct fuse_file_info *fi) {
 static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target file name
-
+	char *parent_dir = dirname(path);
+	char *target_file = basename(path);
 	// Step 2: Call get_node_by_path() to get inode of parent directory
-
+	struct inode parent_inode;
+	int res = get_node_by_path(parent_dir, 0, &parent_inode);
+	if (res == -1) {
+		return -1;
+	}
 	// Step 3: Call get_avail_ino() to get an available inode number
-
+	int next_ino = get_avail_ino();
 	// Step 4: Call dir_add() to add directory entry of target file to parent directory
-
+	res = dir_add(parent_inode, next_ino, target_file, strlen(target_file));
+	if (res == -1) {
+		return -1;
+	}
 	// Step 5: Update inode for target file
-
+	struct inode target_inode;
+	target_inode.ino = next_ino;
+	target_inode.valid = 1;
+	target_inode.size = 0;
+	target_inode.type = S_IFREG;
+	//add link here
+	// how do i do fh
 	// Step 6: Call writei() to write inode to disk
-
+	writei(next_ino, &target_inode);
 	return 0;
 }
 
 static int rufs_open(const char *path, struct fuse_file_info *fi) {
 
 	// Step 1: Call get_node_by_path() to get inode from path
-
+	struct inode curr_inode;
+	int res = get_node_by_path(path, 0, &curr_inode);
+	if (res == -1) {
+		return -1;
+	}
 	// Step 2: If not find, return -1
+	if (curr_inode.type != S_IFREG){
+		return -1;
+	}
+	fi->fh = curr_inode.ino; //check
 
 	return 0;
 }
@@ -514,18 +508,25 @@ static int rufs_open(const char *path, struct fuse_file_info *fi) {
 static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
 
 	// Step 1: You could call get_node_by_path() to get inode from path
-
+	struct inode curr_inode;
+	int res = get_node_by_path(path, 0, &curr_inode);
+	if (res == -1 || curr_inode.type != S_IFREG || size < 0 || offset < 0) {
+		return -1;
+	}
 	// Step 2: Based on size and offset, read its data blocks from disk
-
-	// Step 3: copy the correct amount of data from offset to buffer
+	
 
 	// Note: this function should return the amount of bytes you copied to buffer
-	return 0;
+	return bytes_read;
 }
 
 static int rufs_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) {
 	// Step 1: You could call get_node_by_path() to get inode from path
-
+	struct inode curr_inode;
+	int res = get_node_by_path(path, 0, &curr_inode);
+	if (res == -1 || curr_inode.type != S_IFREG || size < 0 || offset < 0) {
+		return -1;
+	}
 	// Step 2: Based on size and offset, read its data blocks from disk
 
 	// Step 3: Write the correct amount of data from offset to disk
