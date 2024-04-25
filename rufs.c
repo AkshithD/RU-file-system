@@ -182,9 +182,6 @@ int dir_add(struct inode dir_inode, uint16_t f_ino, const char *fname, size_t na
 		memcpy(buf + i * sizeof(struct dirent), &entry[i], sizeof(struct dirent));
 	}
 	// Update directory inode
-	time_t current_time;
-	time(&current_time);
-	dir_inode.vstat.st_mtime = current_time;
 	writei(dir_inode.ino, &dir_inode);
 	// Write directory entry
 	bio_write(dir_inode.direct_ptr[num_of_blocks], buf);
@@ -205,30 +202,58 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 /* 
  * namei operation
  */
-int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
-	// Step 1: Resolve the path name, walk through path, and finally, find its inode.
-	// Note: You could either implement it in a iterative way or recursive way
-	char *path_copy = strdup(path);
-	char *token = strtok(path_copy, "/");
-	int res =0;
-	while (token != NULL) {
-		if (token == "."){
-			token = strtok(NULL, "/");
-			continue;
-		}else if (token == ".."){
-			// fix
-		}
-		res = dir_find(ino, token, strlen(token), inode);
-		if (res == -1) {
-			free(path_copy);
-			return -1;
-		}
-		ino = inode->ino;
-		token = strtok(NULL, "/");
-	}
-	free(path_copy);
-	return 0;
+int resolve_path(const char *path, uint16_t ino, struct inode *inode) {
+    // Assume this function uses dir_find and readi to traverse the final resolved path
+    char *token = strtok((char *)path, "/");
+    while (token) {
+        int res = dir_find(ino, token, strlen(token), inode);
+        if (res == -1) {
+            return -1; // Directory or file not found
+        }
+        ino = inode->ino; // Update inode number
+        token = strtok(NULL, "/");
+    }
+    return readi(ino, inode);
 }
+int get_node_by_path(char *path, uint16_t ino, struct inode *inode) {
+    if (path == NULL || inode == NULL) return -1; // Check for valid input
+
+    char *path_copy = strdup(path); // Make a mutable copy of the path
+    char *token = strtok(path_copy, "/");
+    char *new_path = malloc(strlen(path) + 1); // Allocate space for the modified path
+    new_path[0] = '\0'; // Start with an empty new path
+
+    while (token) {
+        if (strcmp(token, ".") == 0) {
+            // Ignore "." which represents current directory
+        } else if (strcmp(token, "..") == 0) {
+            // Handle ".." by removing the last directory from new_path
+            char *last_slash = strrchr(new_path, '/');
+            if (last_slash) {
+                *last_slash = '\0'; // Cut the path at the last slash
+            } else {
+                // If there's no slash, path goes to root or stays empty
+                strcpy(new_path, "");
+            }
+        } else {
+            // Regular token, append to the path
+            if (strlen(new_path) > 0) {
+                strcat(new_path, "/");
+            }
+            strcat(new_path, token);
+        }
+        token = strtok(NULL, "/");
+    }
+
+    // Now, new_path should contain the resolved path
+    int result = resolve_path(new_path, ino, inode);
+    free(new_path);
+    free(path_copy);
+    return result;
+}
+
+
+
 
 /* 
  * Make file system
@@ -291,7 +316,6 @@ int rufs_mkfs() {
  * FUSE file operations
  */
 static void *rufs_init(struct fuse_conn_info *conn) {
-
 	// Step 1a: If disk file is not found, call mkfs
 	if (dev_open(diskfile_path) == -1) {
 		rufs_mkfs();
@@ -312,7 +336,6 @@ static void *rufs_init(struct fuse_conn_info *conn) {
 }
 
 static void rufs_destroy(void *userdata) {
-
 	// Step 1: De-allocate in-memory data structures
 	free(i_bitmap);
 	free(d_bitmap);
@@ -337,7 +360,6 @@ static int rufs_getattr(const char *path, struct stat *stbuf) {
 		stbuf->st_mode = curr_inode.type | 0755;
 		stbuf->st_nlink  = 2;
 		time(&stbuf->st_mtime);
-
 	return 0;
 }
 
@@ -352,33 +374,89 @@ static int rufs_opendir(const char *path, struct fuse_file_info *fi) {
 	if (curr_inode.type != S_IFDIR){
 		return -1;
 	}
+	fi->fh = curr_inode.ino;
     return 0;
 }
 
 static int rufs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
-
 	// Step 1: Call get_node_by_path() to get inode from path
-
+    struct inode curr_inode;
+    int res = get_node_by_path(path, 0, &curr_inode);
+    if (res == -1) {
+        return -1;
+    }
+	fi -> fh = curr_inode.ino;
 	// Step 2: Read directory entries from its data blocks, and copy them to filler
+    char buf[BLOCK_SIZE];
+    off_t entry_offset = offset / sizeof(struct dirent);  // Calculate starting index based on offset
+    for (int i = entry_offset; i < curr_inode.size / sizeof(struct dirent); i++) {
+        bio_read(curr_inode.direct_ptr[i / (BLOCK_SIZE / sizeof(struct dirent))], buf);
+        struct dirent *entry = (struct dirent *)buf;
+        int entry_index = i % (BLOCK_SIZE / sizeof(struct dirent));
 
-	return 0;
+        if (entry[entry_index].valid == 1) {
+            filler(buffer, entry[entry_index].name, NULL, 0);
+        }
+    }
+	
+    return 0;
 }
+
 
 
 static int rufs_mkdir(const char *path, mode_t mode) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
+    char *path_copy = strdup(path);
+    if (path_copy == NULL) {
+        perror("strdup");
+        return 1;
+    }
+
+    // Initialize parent_dir and target_dir
+    char *parent_dir = NULL;
+    char *target_dir = NULL;
+
+    // Tokenize the path
+    char *token = strtok(path_copy, "/");
+    char *prev_token = NULL;  // To track the previous token
+    while (token != NULL) {
+        if (prev_token != NULL) {
+            // Append the token to parent_dir if it's not the first token
+            size_t len = strlen(prev_token) + strlen("/") + strlen(token) + 1;
+            parent_dir = realloc(parent_dir, len);
+            strcat(parent_dir, "/");
+            strcat(parent_dir, prev_token);
+        }
+        prev_token = token;
+        token = strtok(NULL, "/");
+    }
+
+    // The last token is the target directory
+    target_dir = prev_token;
 
 	// Step 2: Call get_node_by_path() to get inode of parent directory
-
+	struct inode parent_inode;
+	int res = get_node_by_path(parent_dir, 0, &parent_inode);
+	if (res == -1) {
+		return -1;
+	}
 	// Step 3: Call get_avail_ino() to get an available inode number
-
+	int next_ino = get_avail_ino();
 	// Step 4: Call dir_add() to add directory entry of target directory to parent directory
-
+	res = dir_add(parent_inode, next_ino, target_dir, strlen(target_dir));
+	if (res == -1) {
+		return -1;
+	}
 	// Step 5: Update inode for target directory
-
+	struct inode target_inode;
+	target_inode.ino = next_ino;
+	target_inode.valid = 1;
+	target_inode.size = BLOCK_SIZE;
+	target_inode.type = S_IFDIR;
+	target_inode.direct_ptr[0] = get_avail_blkno();
 	// Step 6: Call writei() to write inode to disk
-	
+	writei(next_ino, &target_inode);
 
 	return 0;
 }
