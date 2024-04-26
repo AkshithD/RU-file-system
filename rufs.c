@@ -205,17 +205,19 @@ int dir_remove(struct inode dir_inode, const char *fname, size_t name_len) {
 int resolve_path(const char *path, uint16_t ino, struct inode *inode) {
     // Assume this function uses dir_find and readi to traverse the final resolved path
     char *token = strtok((char *)path, "/");
+	struct dirent *entry = malloc(sizeof(struct dirent));
     while (token) {
-        int res = dir_find(ino, token, strlen(token), inode);
+        int res = dir_find(ino, token, strlen(token), entry);
         if (res == -1) {
             return -1; // Directory or file not found
         }
-        ino = inode->ino; // Update inode number
+        ino = entry->ino; // Update inode number
         token = strtok(NULL, "/");
     }
+	free(entry);
     return readi(ino, inode);
 }
-int get_node_by_path(char *path, uint16_t ino, struct inode *inode) {
+int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
     if (path == NULL || inode == NULL) return -1; // Check for valid input
 
     char *path_copy = strdup(path); // Make a mutable copy of the path
@@ -404,8 +406,8 @@ static int rufs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, 
 static int rufs_mkdir(const char *path, mode_t mode) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target directory name
-    char *parent_dir = dirname(path);
-	char *target_dir = basename(path);
+    char *parent_dir = dirname((char*)path);
+	char *target_dir = basename((char*)path);
 
 	// Step 2: Call get_node_by_path() to get inode of parent directory
 	struct inode parent_inode;
@@ -461,8 +463,8 @@ static int rufs_releasedir(const char *path, struct fuse_file_info *fi) {
 static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 
 	// Step 1: Use dirname() and basename() to separate parent directory path and target file name
-	char *parent_dir = dirname(path);
-	char *target_file = basename(path);
+	char *parent_dir = ((char*)path);
+	char *target_file = ((char*)path);
 	// Step 2: Call get_node_by_path() to get inode of parent directory
 	struct inode parent_inode;
 	int res = get_node_by_path(parent_dir, 0, &parent_inode);
