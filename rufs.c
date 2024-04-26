@@ -46,7 +46,7 @@ int get_avail_ino() {
 	// Step 3: Update inode bitmap and write to disk 
 	if(next_ino != -1) {
 		set_bitmap(i_bitmap, next_ino);
-		bio_write(1, i_bitmap);
+		bio_write(sb.i_bitmap_blk, i_bitmap);
 		return next_ino;
 	}
 	return -1;
@@ -69,7 +69,7 @@ int get_avail_blkno() {
 	// Step 3: Update data block bitmap and write to disk 
 	if(next_blkno != -1) {
 		set_bitmap(d_bitmap, next_blkno);
-		bio_write(2, d_bitmap);
+		bio_write(sb.d_bitmap_blk, d_bitmap);
 		return next_blkno;
 	}
 
@@ -354,7 +354,7 @@ static int rufs_getattr(const char *path, struct stat *stbuf) {
 		stbuf->st_uid = getuid();
 		stbuf->st_gid = getgid();
 		stbuf->st_size = curr_inode.size;
-		stbuf->st_mode = curr_inode.type | 0755; //check
+		stbuf->st_mode = curr_inode.vstat.st_mode; //check
 		stbuf->st_nlink  = 2; //check
 		time(&stbuf->st_mtime);
 	return 0;
@@ -427,6 +427,7 @@ static int rufs_mkdir(const char *path, mode_t mode) {
 	target_inode.size = BLOCK_SIZE;
 	target_inode.type = S_IFDIR;
 	target_inode.direct_ptr[0] = get_avail_blkno();
+	target_inode.vstat.st_mode = mode;
 	// Step 6: Call writei() to write inode to disk
 	writei(next_ino, &target_inode);
 	//how do i add mode
@@ -481,6 +482,7 @@ static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	target_inode.valid = 1;
 	target_inode.size = 0;
 	target_inode.type = S_IFREG;
+	target_inode.vstat.st_mode = mode;
 	//add link here
 	// how do i do fh
 	// Step 6: Call writei() to write inode to disk
@@ -510,11 +512,40 @@ static int rufs_read(const char *path, char *buffer, size_t size, off_t offset, 
 	// Step 1: You could call get_node_by_path() to get inode from path
 	struct inode curr_inode;
 	int res = get_node_by_path(path, 0, &curr_inode);
-	if (res == -1 || curr_inode.type != S_IFREG || size < 0 || offset < 0) {
+	if (res == -1 || curr_inode.type != S_IFREG || size < 0 || offset < 0 || offset > curr_inode.size) {
 		return -1;
 	}
 	// Step 2: Based on size and offset, read its data blocks from disk
-	
+	int start_block = offset / BLOCK_SIZE;
+	int start_offset = offset % BLOCK_SIZE;
+	int end_block;
+	int end_offset;
+	int bytes_read = 0;
+	if (size + offset > curr_inode.size) {
+		end_block = curr_inode.size / BLOCK_SIZE;
+		end_offset = curr_inode.size % BLOCK_SIZE;
+	} else {
+		end_block = (size + offset) / BLOCK_SIZE;
+		end_offset = (size + offset) % BLOCK_SIZE;
+	}
+	char buf[BLOCK_SIZE];
+	for (int i = start_block; i <= end_block; i++) {
+		bio_read(curr_inode.direct_ptr[i], buf);
+		if (i == start_block && i == end_block) {
+			memcpy(buffer, buf + start_offset, end_offset - start_offset);
+			bytes_read += end_offset - start_offset;
+		} else if (i == start_block) {
+			memcpy(buffer, buf + start_offset, BLOCK_SIZE - start_offset);
+			bytes_read += BLOCK_SIZE - start_offset;
+		} else if (i == end_block) {
+			memcpy(buffer, buf, end_offset);
+			bytes_read += end_offset;
+		} else {
+			memcpy(buffer, buf, BLOCK_SIZE);
+			bytes_read += BLOCK_SIZE;
+		}
+	}
+
 
 	// Note: this function should return the amount of bytes you copied to buffer
 	return bytes_read;
@@ -524,16 +555,47 @@ static int rufs_write(const char *path, const char *buffer, size_t size, off_t o
 	// Step 1: You could call get_node_by_path() to get inode from path
 	struct inode curr_inode;
 	int res = get_node_by_path(path, 0, &curr_inode);
-	if (res == -1 || curr_inode.type != S_IFREG || size < 0 || offset < 0) {
+	if (res == -1 || curr_inode.type != S_IFREG || size < 0 || offset < 0 || offset > curr_inode.size) {
 		return -1;
 	}
 	// Step 2: Based on size and offset, read its data blocks from disk
+	int start_block = offset / BLOCK_SIZE;
+	int start_offset = offset % BLOCK_SIZE;
+	// from the start offset write the buffer and if the buffer is larger than the block size then write the rest of the buffer to the next block
+	// if we runout of data blocks then allocate a new one and write the rest of the buffer to that block and so on
+	if (size + offset > curr_inode.size) {
+		int new_size = size - (curr_inode.size - offset);
+		int old_size = curr_inode.size;
+		curr_inode.size += new_size;
+		int num_of_new_blocks = (new_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		int old_num_of_blocks = (old_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+		for (int i = old_num_of_blocks; i < old_num_of_blocks + num_of_new_blocks; i++) {
+			curr_inode.direct_ptr[i] = get_avail_blkno();
+			if (curr_inode.direct_ptr[i] == -1) {
+				return -1;
+			}
+		}
+	}
 
 	// Step 3: Write the correct amount of data from offset to disk
-
+	int end_block = (size + offset) / BLOCK_SIZE;
+	int end_offset = (size + offset) % BLOCK_SIZE;
+	char buf[BLOCK_SIZE];
+	for (int i = start_block; i <= end_block; i++) {
+		bio_read(curr_inode.direct_ptr[i], buf);
+		if (i == start_block && i == end_block) {
+			memcpy(buf + start_offset, buffer, end_offset - start_offset);
+		} else if (i == start_block) {
+			memcpy(buf + start_offset, buffer, BLOCK_SIZE - start_offset);
+		} else if (i == end_block) {
+			memcpy(buf, buffer, end_offset);
+		} else {
+			memcpy(buf, buffer, BLOCK_SIZE);
+		}
+		bio_write(curr_inode.direct_ptr[i], buf);
+	}
 	// Step 4: Update the inode info and write it to disk
-
-	// Note: this function should return the amount of bytes you write to disk
+	writei(curr_inode.ino, &curr_inode);
 	return size;
 }
 
