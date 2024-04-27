@@ -321,15 +321,15 @@ static void *rufs_init(struct fuse_conn_info *conn) {
 	}
 	// Step 1b: If disk file is found, just initialize in-memory data structures
 	// and read superblock from disk
-	bio_read(0, &sb);
-	if (sb.magic_num != MAGIC_NUM) {
-		printf("Error: Magic number does not match. Exiting...\n");
-		exit(1);
-	}
+	char buf[BLOCK_SIZE];
+	bio_read(0, buf);
+	memcpy(&sb, buf, sizeof(struct superblock));
 	i_bitmap = (bitmap_t) malloc(MAX_INUM / 8);
 	d_bitmap = (bitmap_t) malloc(MAX_DNUM / 8);
-	bio_read(sb.i_bitmap_blk, i_bitmap);
-	bio_read(sb.d_bitmap_blk, d_bitmap);
+	bio_read(sb.i_bitmap_blk, buf);
+	memcpy(i_bitmap, buf, MAX_INUM / 8);
+	bio_read(sb.d_bitmap_blk, buf);
+	memcpy(d_bitmap, buf, MAX_DNUM / 8);
 
 	return NULL;
 }
@@ -346,11 +346,13 @@ static void rufs_destroy(void *userdata) {
 static int rufs_getattr(const char *path, struct stat *stbuf) {
 	// check this function
 	// Step 1: call get_node_by_path() to get inode from path
+	printf("getattr %s\n", path);
 	struct inode curr_inode;
 	int res = get_node_by_path(path, 0, &curr_inode);
 	if (res == -1) {
 		return -1;
 	}
+	printf("got inode %d\n", curr_inode.ino);
 
 	// Step 2: fill attribute of file into stbuf from inode
 		stbuf->st_uid = getuid();
@@ -359,6 +361,7 @@ static int rufs_getattr(const char *path, struct stat *stbuf) {
 		stbuf->st_mode = curr_inode.vstat.st_mode; //check
 		stbuf->st_nlink  = 2; //check
 		time(&stbuf->st_mtime);
+	printf("filled stbuf\n");
 	return 0;
 }
 
