@@ -230,7 +230,9 @@ int resolve_path(const char *path, uint16_t ino, struct inode *inode) {
         token = strtok(NULL, "/");
     }
 	free(entry);
-    return readi(ino, inode);
+	int read = readi(ino, inode);
+	printf("readi %d inode: %d\n", read, inode->ino);
+    return read; 
 }
 int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
     if (path == NULL || inode == NULL) return -1; // Check for valid input
@@ -268,6 +270,7 @@ int get_node_by_path(const char *path, uint16_t ino, struct inode *inode) {
     free(path_copy);
     return result;
 }
+
 
 /* 
  * Make file system
@@ -416,7 +419,7 @@ static int rufs_opendir(const char *path, struct fuse_file_info *fi) {
 	// Step 2: If not find, return -1
 	if (curr_inode->type != __S_IFDIR){
 		free(curr_inode);
-		return -1;
+		return -ENOTDIR;
 	}
 	free(curr_inode);
     return 0;
@@ -569,6 +572,7 @@ static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	struct inode *parent_inode = (struct inode*)malloc(sizeof(struct inode));
 	int res = get_node_by_path(parent_dir, 0, parent_inode);
 	if (res == -1) {
+		printf("GET NODE BY PATH FAILED\n");
 		free(parent_inode);
 		return -ENOENT;
 	}
@@ -581,6 +585,7 @@ static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	// Step 4: Call dir_add() to add directory entry of target file to parent directory
 	res = dir_add(*parent_inode, next_ino, target_file, strlen(target_file));
 	if (res == -1) {
+		printf("DIR ADD FAILED\n");
 		free(parent_inode);
 		return -EIO;
 	}
@@ -595,7 +600,7 @@ static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	if (target_inode->direct_ptr[0] == -1) {
 		free(parent_inode);
 		free(target_inode);
-		return -1;
+		return -EIO;
 	}
 	target_inode->link = 1;
 	target_inode->vstat.st_dev = 0;
@@ -614,12 +619,14 @@ static int rufs_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	// Step 6: Call writei() to write inode to disk
 	res = writei(next_ino, target_inode);
 	if (res == -1) {
+		printf("WRITEI FAILED\n");
 		free(parent_inode);
 		free(target_inode);
 		return -EIO;
 	}
 	free(parent_inode);
 	free(target_inode);
+	printf("create success\n");
 	return 0;
 }
 
